@@ -22,7 +22,7 @@
 #include <zmk/events/split_peripheral_status_changed.h>
 #include <zmk/split/central.h>
 
-#include <dt-bindings/zmk/hid_indicators.h>
+#include <dt-bindings/zmk/hid_usage.h>
 
 #include "widgets/output_status.h"
 #include "widgets/layer_status.h"
@@ -52,13 +52,19 @@ struct combo_batt_state {
 };
 
 static struct combo_batt_state combo_batt_get_state(const zmk_event_t *eh) {
+    const struct zmk_peripheral_battery_state_changed *battery_event =
+        eh == NULL ? NULL : as_zmk_peripheral_battery_state_changed(eh);
     struct combo_batt_state state = {
         .left_level = bt_bas_get_battery_level(),
         .right_level = 0,
         .right_valid = combo_batt_right_valid,
     };
 
-    if (state.right_valid) {
+    if (battery_event != NULL && battery_event->source == 0) {
+        state.right_level = battery_event->state_of_charge;
+        state.right_valid = true;
+        combo_batt_right_valid = true;
+    } else if (state.right_valid) {
         zmk_split_central_get_peripheral_battery_level(0, &state.right_level);
     }
 
@@ -82,19 +88,10 @@ ZMK_DISPLAY_WIDGET_LISTENER(combo_batt_listener, struct combo_batt_state, combo_
 ZMK_SUBSCRIPTION(combo_batt_listener, zmk_battery_state_changed);
 ZMK_SUBSCRIPTION(combo_batt_listener, zmk_peripheral_battery_state_changed);
 
-static int combo_batt_mark_right_valid_cb(const zmk_event_t *eh) {
-    combo_batt_right_valid = true;
-    return ZMK_EV_EVENT_BUBBLE;
-}
-
-ZMK_LISTENER(combo_batt_mark_right_valid, combo_batt_mark_right_valid_cb);
-ZMK_SUBSCRIPTION(combo_batt_mark_right_valid, zmk_peripheral_battery_state_changed);
-
 /* Key press counter: counted on physical position events, displayed once per
  * minute, persisted to settings every 10 minutes and before going to sleep. */
 static lv_obj_t *key_count_label;
 static atomic_t key_press_count = ATOMIC_INIT(0);
-static atomic_t key_count_dirty = ATOMIC_INIT(0);
 static atomic_t key_count_saved = ATOMIC_INIT(0);
 
 #define KEY_COUNT_DISPLAY_INTERVAL K_MINUTES(1)
@@ -112,14 +109,13 @@ static void key_count_display_cb(struct k_work *work) {
 K_WORK_DEFINE(key_count_display_work, key_count_display_cb);
 
 static void key_count_save_cb(struct k_work *work) {
-    if (!atomic_get(&key_count_dirty)) {
+    uint32_t count = (uint32_t)atomic_get(&key_press_count);
+    if (count == (uint32_t)atomic_get(&key_count_saved)) {
         return;
     }
 
-    uint32_t count = (uint32_t)atomic_get(&key_press_count);
     if (settings_save_one("zen_keys/count", &count, sizeof(count)) == 0) {
         atomic_set(&key_count_saved, (atomic_val_t)count);
-        atomic_set(&key_count_dirty, 0);
     }
 }
 
@@ -145,7 +141,6 @@ static int key_count_listener_cb(const zmk_event_t *eh) {
 
     if (ev->state) {
         atomic_inc(&key_press_count);
-        atomic_set(&key_count_dirty, 1);
     }
 
     return ZMK_EV_EVENT_BUBBLE;
@@ -157,7 +152,7 @@ ZMK_SUBSCRIPTION(key_count_listener, zmk_position_state_changed);
 static int key_count_activity_cb(const zmk_event_t *eh) {
     struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
 
-    if (ev != NULL && ev->state == ZMK_ACTIVITY_SLEEP && atomic_get(&key_count_dirty)) {
+    if (ev != NULL && ev->state == ZMK_ACTIVITY_SLEEP) {
         key_count_save_cb(NULL);
     }
 
@@ -176,7 +171,6 @@ static int key_count_settings_set(const char *name, size_t len, settings_read_cb
         if (read_cb(cb_arg, &count, sizeof(count)) == sizeof(count)) {
             atomic_set(&key_press_count, (atomic_val_t)count);
             atomic_set(&key_count_saved, (atomic_val_t)count);
-            atomic_set(&key_count_dirty, 0);
         }
     }
 
@@ -196,14 +190,17 @@ static lv_obj_t *status_screen;
 static lv_obj_t *locks_label;
 static zmk_hid_indicators_t locks_indicators;
 
+/* HID LED report bits start at the Num Lock usage (0x01). */
+#define ZEN_HID_INDICATOR(usage) (1U << ((usage) - HID_USAGE_LED_NUM_LOCK))
+
 static void locks_display_cb(struct k_work *work) {
     char line1[8] = "";
     char text[12] = "";
 
-    if (locks_indicators & HID_INDICATOR_CAPS_LOCK) {
+    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_CAPS_LOCK)) {
         strcat(line1, "CAP");
     }
-    if (locks_indicators & HID_INDICATOR_NUM_LOCK) {
+    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_NUM_LOCK)) {
         if (line1[0] != '\0') {
             strcat(line1, " ");
         }
@@ -212,14 +209,16 @@ static void locks_display_cb(struct k_work *work) {
     if (line1[0] != '\0') {
         strcpy(text, line1);
     }
-    if (locks_indicators & HID_INDICATOR_SCROLL_LOCK) {
+    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_SCROLL_LOCK)) {
         if (text[0] != '\0') {
             strcat(text, "\n");
         }
         strcat(text, "SCR");
     }
 
-    lv_label_set_text(locks_label, text);
+    if (strcmp(lv_label_get_text(locks_label), text) != 0) {
+        lv_label_set_text(locks_label, text);
+    }
 }
 
 K_WORK_DEFINE(locks_display_work, locks_display_cb);
@@ -251,11 +250,11 @@ static void full_refresh_cb(struct k_work *work) {
     }
 }
 
-K_WORK_DEFINE(full_refresh_work, full_refresh_cb);
+K_WORK_DELAYABLE_DEFINE(full_refresh_work, full_refresh_cb);
 
 static int full_refresh_listener_cb(const zmk_event_t *eh) {
     if (zmk_display_is_initialized()) {
-        k_work_submit_to_queue(zmk_display_work_q(), &full_refresh_work);
+        k_work_reschedule_for_queue(zmk_display_work_q(), &full_refresh_work, K_MSEC(150));
     }
 
     return ZMK_EV_EVENT_BUBBLE;
