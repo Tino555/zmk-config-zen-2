@@ -94,10 +94,14 @@ jobs:
         working-directory: ${{ env.base_dir }}
         run: west update --fetch-opt=--filter=tree:0
 
-      - name: Install custom Corne-ish Zen logo
-        if: ${{ matrix.board == 'corneish_zen_v2_right' }}
+      - name: Install custom Corne-ish Zen screen and logo
+        if: ${{ matrix.board == 'corneish_zen_v2_left' || matrix.board == 'corneish_zen_v2_right' }}
         working-directory: ${{ env.base_dir }}
         run: |
+          cp "${GITHUB_WORKSPACE}/config/custom_status_screen.c" \
+            "zmk/app/boards/arm/corneish_zen/custom_status_screen.c"
+          cp "${GITHUB_WORKSPACE}/config/custom_status_screen.h" \
+            "zmk/app/boards/arm/corneish_zen/custom_status_screen.h"
           cp "${GITHUB_WORKSPACE}/config/widgets/icons/zenlogo.c" \
             "zmk/app/boards/arm/corneish_zen/widgets/icons/zenlogo.c"
           cmp "${GITHUB_WORKSPACE}/config/widgets/icons/zenlogo.c" \
