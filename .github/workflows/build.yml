@@ -108,8 +108,6 @@ jobs:
             "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
           cp "${GITHUB_WORKSPACE}/config/widgets/battery_status.c" \
             "zmk/app/boards/arm/corneish_zen/widgets/battery_status.c"
-          cp "${GITHUB_WORKSPACE}/config/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml" \
-            "zmk/app/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml"
           printf '\nzephyr_library_sources_ifdef(CONFIG_CUSTOM_WIDGET_PERIPHERAL_STATUS zen_minute_behavior.c)\n' \
             >> "zmk/app/boards/arm/corneish_zen/CMakeLists.txt"
           for number in 1 2 3 4 5; do

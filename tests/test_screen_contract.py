@@ -85,8 +85,8 @@ int main(void) {
                 self.assertEqual((board / name).read_bytes(), (ROOT / "config" / name).read_bytes())
             self.assertEqual((board / "widgets/battery_status.c").read_bytes(),
                              (ROOT / "config/widgets/battery_status.c").read_bytes())
-            self.assertEqual((target / "dts/bindings/behaviors/zmk,behavior-zen-minute.yaml").read_bytes(),
-                             (ROOT / "config/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml").read_bytes())
+            self.assertFalse((target / "dts/bindings/behaviors/zmk,behavior-zen-minute.yaml").exists())
+            self.assertTrue((ROOT / "config/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml").exists())
             self.assertIn("zephyr_library_sources_ifdef(CONFIG_CUSTOM_WIDGET_PERIPHERAL_STATUS zen_minute_behavior.c)",
                           (board / "CMakeLists.txt").read_text())
 
