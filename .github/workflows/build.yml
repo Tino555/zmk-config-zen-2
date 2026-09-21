@@ -112,8 +112,16 @@ jobs:
             "zmk/app/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml"
           printf '\nzephyr_library_sources_ifdef(CONFIG_CUSTOM_WIDGET_PERIPHERAL_STATUS zen_minute_behavior.c)\n' \
             >> "zmk/app/boards/arm/corneish_zen/CMakeLists.txt"
-          for icon in bluetooth_connected_{1..5} bluetooth_advertising_{1..5} \
-                      bluetooth_connected_right bluetooth_disconnected_right zenlogo; do
+          for number in 1 2 3 4 5; do
+            for state in connected advertising; do
+              icon="bluetooth_${state}_${number}"
+              cp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \
+                "zmk/app/boards/arm/corneish_zen/widgets/icons/${icon}.c"
+              cmp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \
+                "zmk/app/boards/arm/corneish_zen/widgets/icons/${icon}.c"
+            done
+          done
+          for icon in bluetooth_connected_right bluetooth_disconnected_right zenlogo; do
             cp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \
               "zmk/app/boards/arm/corneish_zen/widgets/icons/${icon}.c"
             cmp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \

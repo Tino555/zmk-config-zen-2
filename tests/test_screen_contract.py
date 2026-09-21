@@ -71,7 +71,7 @@ int main(void) {
             (board / "widgets/icons").mkdir(parents=True)
             (target / "dts/bindings/behaviors").mkdir(parents=True)
             (board / "CMakeLists.txt").write_text("zephyr_library()\n")
-            subprocess.run(["bash", "-e", "-c", textwrap.dedent(script)], cwd=directory,
+            subprocess.run(["sh", "-e", "-c", textwrap.dedent(script)], cwd=directory,
                            env={**os.environ, "GITHUB_WORKSPACE": str(ROOT)}, check=True,
                            capture_output=True)
             names = [*(f"bluetooth_connected_{i}" for i in range(1, 6)),
