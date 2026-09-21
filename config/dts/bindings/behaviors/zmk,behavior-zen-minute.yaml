@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+description: Receive completed key count window from the central half
+compatible: "zmk,behavior-zen-minute"
+include: two_param.yaml

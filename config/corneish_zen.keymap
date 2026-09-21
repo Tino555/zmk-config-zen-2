@@ -20,6 +20,11 @@
 
 / {
     behaviors {
+        zenmin: zen_minute {
+            compatible = "zmk,behavior-zen-minute";
+            label = "zenmin";
+            #binding-cells = <2>;
+        };
         td0: td0 {
             compatible = "zmk,behavior-tap-dance";
             label = "TD0";
@@ -38,14 +43,14 @@
 
             // --------------------------------------------------------------------------------
             // |  TAB |  Q  |  W  |  E  |  R  |  T  |   |  Y  |  U   |  I  |  O  |  P  | BKSP |
-            // | CTRL |  A  |  S  |  D  |  F  |  G  |   |  H  |  J   |  K  |  L  |  ;  |  '   | 
-            // | SHFT |  Z  |  X  |  C  |  V  |  B  |   |  N  |  M   |  ,  |  .  |  /  | ESC  |
+            // | SHFT |  A  |  S  |  D  |  F  |  G  |   |  H  |  J   |  K  |  L  |  ;  |  '   |
+            // | CTRL |  Z  |  X  |  C  |  V  |  B  |   |  N  |  M   |  ,  |  .  |  /  | ESC  |
             //                    | GUI | LWR | SPC |   | ENT | RSE  | ALT |
 
             bindings = <
 &kp TAB    &kp Q  &kp W  &kp E     &kp R  &kp T          &kp Y        &kp U  &kp I      &kp O    &kp P     &kp BSPC
-&kp LCTRL  &kp A  &kp S  &kp D     &kp F  &kp G          &kp H        &kp J  &kp K      &kp L    &kp SEMI  &kp SQT
-&td0       &kp Z  &kp X  &kp C     &kp V  &kp B          &kp N        &kp M  &kp COMMA  &kp DOT  &kp FSLH  &kp ESC
+&td0       &kp A  &kp S  &kp D     &kp F  &kp G          &kp H        &kp J  &kp K      &kp L    &kp SEMI  &kp SQT
+&kp LCTRL  &kp Z  &kp X  &kp C     &kp V  &kp B          &kp N        &kp M  &kp COMMA  &kp DOT  &kp FSLH  &kp ESC
                          &kp LGUI  &mo 1  &lt 3 SPACE    &lt 3 ENTER  &mo 2  &kp RALT
             >;
         };
@@ -95,5 +100,3 @@
         };
     };
 };
-
-

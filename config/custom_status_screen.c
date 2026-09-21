@@ -11,22 +11,20 @@
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
 
-#include <zephyr/bluetooth/services/bas.h>
-
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
 #include <zmk/events/battery_state_changed.h>
-#include <zmk/events/hid_indicators_changed.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/events/split_peripheral_status_changed.h>
 #include <zmk/split/central.h>
-
-#include <dt-bindings/zmk/hid_usage.h>
+#include <zmk/split/bluetooth/peripheral.h>
 
 #include "widgets/output_status.h"
 #include "widgets/layer_status.h"
 #include "widgets/peripheral_status.h"
+#include "widgets/battery_status.h"
+#include "zen_minute_counter.h"
 #include "custom_status_screen.h"
 
 #include <zephyr/logging/log.h>
@@ -34,75 +32,94 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 LV_IMG_DECLARE(zenlogo);
 LV_IMG_DECLARE(layers2);
+static struct zmk_widget_battery_status battery_status_widget;
+
+static void set_count_text(lv_obj_t *label, const char *text) {
+    const lv_font_t *fonts[] = {
+        &lv_font_montserrat_14, &lv_font_montserrat_10, &lv_font_montserrat_8,
+    };
+    lv_coord_t available = lv_obj_get_width(lv_obj_get_parent(label)) - 2;
+    const lv_font_t *font = fonts[ARRAY_SIZE(fonts) - 1];
+    for (size_t i = 0; i < ARRAY_SIZE(fonts); ++i) {
+        if (lv_txt_get_width(text, strlen(text), fonts[i], 0, LV_TEXT_FLAG_NONE) <= available) {
+            font = fonts[i];
+            break;
+        }
+    }
+    bool font_changed = lv_obj_get_style_text_font(label, LV_PART_MAIN) != font;
+    bool text_changed = strcmp(lv_label_get_text(label), text) != 0;
+    if (!font_changed && !text_changed) {
+        return;
+    }
+    if (font_changed) {
+        lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+    }
+    if (text_changed) {
+        lv_label_set_text(label, text);
+    }
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 58);
+}
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 
 static struct zmk_widget_output_status output_status_widget;
 static struct zmk_widget_layer_status layer_status_widget;
 
-/* Combined battery: L<left> R<right>, right shown as -- until the first
- * peripheral battery report arrives. */
-static lv_obj_t *combo_batt_label;
-static bool combo_batt_right_valid;
-
-struct combo_batt_state {
-    uint8_t left_level;
-    uint8_t right_level;
-    bool right_valid;
-};
-
-static struct combo_batt_state combo_batt_get_state(const zmk_event_t *eh) {
-    const struct zmk_peripheral_battery_state_changed *battery_event =
-        eh == NULL ? NULL : as_zmk_peripheral_battery_state_changed(eh);
-    struct combo_batt_state state = {
-        .left_level = bt_bas_get_battery_level(),
-        .right_level = 0,
-        .right_valid = combo_batt_right_valid,
-    };
-
-    if (battery_event != NULL && battery_event->source == 0) {
-        state.right_level = battery_event->state_of_charge;
-        state.right_valid = true;
-        combo_batt_right_valid = true;
-    } else if (state.right_valid) {
-        zmk_split_central_get_peripheral_battery_level(0, &state.right_level);
-    }
-
-    return state;
-}
-
-static void combo_batt_update_cb(struct combo_batt_state state) {
-    char text[16];
-
-    if (state.right_valid) {
-        snprintf(text, sizeof(text), "L%d R%d", state.left_level, state.right_level);
-    } else {
-        snprintf(text, sizeof(text), "L%d R--", state.left_level);
-    }
-
-    lv_label_set_text(combo_batt_label, text);
-}
-
-ZMK_DISPLAY_WIDGET_LISTENER(combo_batt_listener, struct combo_batt_state, combo_batt_update_cb,
-                            combo_batt_get_state)
-ZMK_SUBSCRIPTION(combo_batt_listener, zmk_battery_state_changed);
-ZMK_SUBSCRIPTION(combo_batt_listener, zmk_peripheral_battery_state_changed);
-
 /* Key press counter: counted on physical position events, displayed once per
  * minute, persisted to settings every 10 minutes and before going to sleep. */
 static lv_obj_t *key_count_label;
 static atomic_t key_press_count = ATOMIC_INIT(0);
 static atomic_t key_count_saved = ATOMIC_INIT(0);
+static struct zen_minute_counter minute_counter;
+static atomic_t minute_delta = ATOMIC_INIT(0);
+static atomic_t minute_sequence = ATOMIC_INIT(0);
+static atomic_t minute_retries = ATOMIC_INIT(0);
+static atomic_t minute_ready = ATOMIC_INIT(0);
+static atomic_t minute_awake = ATOMIC_INIT(1);
 
 #define KEY_COUNT_DISPLAY_INTERVAL K_MINUTES(1)
 #define KEY_COUNT_SAVE_INTERVAL K_MINUTES(10)
 
-static void key_count_display_cb(struct k_work *work) {
-    char text[12];
+static void minute_send_cb(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(minute_send_work, minute_send_cb);
 
-    snprintf(text, sizeof(text), "%lu", (unsigned long)atomic_get(&key_press_count));
-    if (strcmp(lv_label_get_text(key_count_label), text) != 0) {
-        lv_label_set_text(key_count_label, text);
+static void minute_send_cb(struct k_work *work) {
+    if (!atomic_get(&minute_ready) || atomic_dec(&minute_retries) <= 0) {
+        atomic_set(&minute_retries, 0);
+        return;
+    }
+
+    struct zmk_behavior_binding binding = {
+        .behavior_dev = "zenmin",
+        .param1 = (uint32_t)atomic_get(&minute_delta),
+        .param2 = (uint32_t)atomic_get(&minute_sequence),
+    };
+    struct zmk_behavior_binding_event event = {0};
+    int err = zmk_split_central_invoke_behavior(0, &binding, event, true);
+    if (err) {
+        LOG_WRN("Minute count queue failed: %d", err);
+    }
+    if (atomic_get(&minute_retries) > 0) {
+        k_work_reschedule(&minute_send_work, K_SECONDS(10));
+    }
+}
+
+static void key_count_display_cb(struct k_work *work) {
+    if (work != NULL && !atomic_get(&minute_awake)) {
+        return;
+    }
+    uint32_t count = (uint32_t)atomic_get(&key_press_count);
+    char text[16];
+
+    snprintf(text, sizeof(text), "Keys %lu", (unsigned long)count);
+    set_count_text(key_count_label, text);
+
+    if (work != NULL) {
+        atomic_set(&minute_delta, (atomic_val_t)zen_minute_counter_complete(&minute_counter, count));
+        atomic_inc(&minute_sequence);
+        atomic_set(&minute_ready, 1);
+        atomic_set(&minute_retries, 6);
+        k_work_reschedule(&minute_send_work, K_NO_WAIT);
     }
 }
 
@@ -153,7 +170,18 @@ static int key_count_activity_cb(const zmk_event_t *eh) {
     struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
 
     if (ev != NULL && ev->state == ZMK_ACTIVITY_SLEEP) {
+        atomic_set(&minute_awake, 0);
+        k_timer_stop(&key_count_display_timer);
+        k_timer_stop(&key_count_save_timer);
+        zen_minute_counter_reset(&minute_counter, (uint32_t)atomic_get(&key_press_count));
+        atomic_set(&minute_ready, 0);
+        k_work_cancel_delayable(&minute_send_work);
         key_count_save_cb(NULL);
+    } else if (ev != NULL && ev->state == ZMK_ACTIVITY_ACTIVE && !atomic_get(&minute_awake)) {
+        atomic_set(&minute_awake, 1);
+        k_timer_start(&key_count_display_timer, KEY_COUNT_DISPLAY_INTERVAL,
+                      KEY_COUNT_DISPLAY_INTERVAL);
+        k_timer_start(&key_count_save_timer, KEY_COUNT_SAVE_INTERVAL, KEY_COUNT_SAVE_INTERVAL);
     }
 
     return ZMK_EV_EVENT_BUBBLE;
@@ -161,6 +189,20 @@ static int key_count_activity_cb(const zmk_event_t *eh) {
 
 ZMK_LISTENER(key_count_activity_listener, key_count_activity_cb);
 ZMK_SUBSCRIPTION(key_count_activity_listener, zmk_activity_state_changed);
+
+static int key_count_battery_cb(const zmk_event_t *eh) {
+    const struct zmk_peripheral_battery_state_changed *ev =
+        as_zmk_peripheral_battery_state_changed(eh);
+    if (ev != NULL && ev->source == 0 && ev->state_of_charge > 0 &&
+        atomic_get(&minute_ready)) {
+        atomic_set(&minute_retries, 6);
+        k_work_reschedule(&minute_send_work, K_SECONDS(2));
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(key_count_battery_listener, key_count_battery_cb);
+ZMK_SUBSCRIPTION(key_count_battery_listener, zmk_peripheral_battery_state_changed);
 
 static int key_count_settings_set(const char *name, size_t len, settings_read_cb read_cb,
                                   void *cb_arg) {
@@ -185,84 +227,54 @@ static struct settings_handler key_count_settings = {
 #else /* peripheral (right) side */
 
 static struct zmk_widget_peripheral_status peripheral_status_widget;
+static lv_obj_t *minute_label;
+static atomic_t right_connected = ATOMIC_INIT(0);
+static atomic_t right_valid = ATOMIC_INIT(0);
+static atomic_t right_delta = ATOMIC_INIT(0);
+static atomic_t right_sequence = ATOMIC_INIT(0);
 
-static lv_obj_t *status_screen;
-static lv_obj_t *locks_label;
-static zmk_hid_indicators_t locks_indicators;
-
-/* HID LED report bits start at the Num Lock usage (0x01). */
-#define ZEN_HID_INDICATOR(usage) (1U << ((usage) - HID_USAGE_LED_NUM_LOCK))
-
-static void locks_display_cb(struct k_work *work) {
-    char line1[8] = "";
-    char text[12] = "";
-
-    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_CAPS_LOCK)) {
-        strcat(line1, "CAP");
+static void minute_display_cb(struct k_work *work) {
+    char text[16];
+    if (atomic_get(&right_connected) && atomic_get(&right_valid)) {
+        snprintf(text, sizeof(text), "+%lu", (unsigned long)(uint32_t)atomic_get(&right_delta));
+    } else {
+        strcpy(text, "+--");
     }
-    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_NUM_LOCK)) {
-        if (line1[0] != '\0') {
-            strcat(line1, " ");
-        }
-        strcat(line1, "NUM");
-    }
-    if (line1[0] != '\0') {
-        strcpy(text, line1);
-    }
-    if (locks_indicators & ZEN_HID_INDICATOR(HID_USAGE_LED_SCROLL_LOCK)) {
-        if (text[0] != '\0') {
-            strcat(text, "\n");
-        }
-        strcat(text, "SCR");
-    }
+    set_count_text(minute_label, text);
+}
 
-    if (strcmp(lv_label_get_text(locks_label), text) != 0) {
-        lv_label_set_text(locks_label, text);
+K_WORK_DEFINE(minute_display_work, minute_display_cb);
+
+void zen_minute_received(uint32_t delta, uint32_t sequence) {
+    if (!zmk_split_bt_peripheral_is_connected() ||
+        (atomic_get(&right_valid) && sequence <= (uint32_t)atomic_get(&right_sequence))) {
+        return;
+    }
+    atomic_set(&right_delta, (atomic_val_t)delta);
+    atomic_set(&right_sequence, (atomic_val_t)sequence);
+    atomic_set(&right_valid, 1);
+    if (minute_label != NULL && zmk_display_is_initialized()) {
+        k_work_submit_to_queue(zmk_display_work_q(), &minute_display_work);
     }
 }
 
-K_WORK_DEFINE(locks_display_work, locks_display_cb);
-
-static int locks_listener_cb(const zmk_event_t *eh) {
-    const struct zmk_hid_indicators_changed *ev = as_zmk_hid_indicators_changed(eh);
-
-    if (ev == NULL) {
-        return ZMK_EV_EVENT_BUBBLE;
+static int minute_connection_cb(const zmk_event_t *eh) {
+    const struct zmk_split_peripheral_status_changed *ev =
+        as_zmk_split_peripheral_status_changed(eh);
+    if (ev != NULL) {
+        atomic_set(&right_connected, ev->connected);
+        if (!ev->connected) {
+            atomic_set(&right_valid, 0);
+        }
+        if (minute_label != NULL && zmk_display_is_initialized()) {
+            k_work_submit_to_queue(zmk_display_work_q(), &minute_display_work);
+        }
     }
-
-    locks_indicators = ev->indicators;
-
-    if (zmk_display_is_initialized()) {
-        k_work_submit_to_queue(zmk_display_work_q(), &locks_display_work);
-    }
-
     return ZMK_EV_EVENT_BUBBLE;
 }
 
-ZMK_LISTENER(locks_listener, locks_listener_cb);
-ZMK_SUBSCRIPTION(locks_listener, zmk_hid_indicators_changed);
-
-/* Redraw the whole screen on any state change so the IL0323 driver always
- * receives a full frame, keeping battery/connection/logo blacks even. */
-static void full_refresh_cb(struct k_work *work) {
-    if (status_screen != NULL) {
-        lv_obj_invalidate(status_screen);
-    }
-}
-
-K_WORK_DELAYABLE_DEFINE(full_refresh_work, full_refresh_cb);
-
-static int full_refresh_listener_cb(const zmk_event_t *eh) {
-    if (zmk_display_is_initialized()) {
-        k_work_reschedule_for_queue(zmk_display_work_q(), &full_refresh_work, K_MSEC(150));
-    }
-
-    return ZMK_EV_EVENT_BUBBLE;
-}
-
-ZMK_LISTENER(full_refresh_listener, full_refresh_listener_cb);
-ZMK_SUBSCRIPTION(full_refresh_listener, zmk_split_peripheral_status_changed);
-ZMK_SUBSCRIPTION(full_refresh_listener, zmk_hid_indicators_changed);
+ZMK_LISTENER(minute_connection_listener, minute_connection_cb);
+ZMK_SUBSCRIPTION(minute_connection_listener, zmk_split_peripheral_status_changed);
 
 #endif /* CONFIG_ZMK_SPLIT_ROLE_CENTRAL */
 
@@ -271,20 +283,17 @@ lv_obj_t *zmk_display_status_screen() {
     screen = lv_obj_create(NULL);
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    combo_batt_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(combo_batt_label, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(combo_batt_label, LV_ALIGN_TOP_MID, 0, 2);
-    combo_batt_listener_init();
+    zmk_widget_battery_status_init(&battery_status_widget, screen);
+    lv_obj_align(zmk_widget_battery_status_obj(&battery_status_widget), LV_ALIGN_TOP_MID, 0, 2);
 
     zmk_widget_output_status_init(&output_status_widget, screen);
-    lv_obj_align(zmk_widget_output_status_obj(&output_status_widget), LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_align(zmk_widget_output_status_obj(&output_status_widget), LV_ALIGN_TOP_MID, 0, 37);
 
     key_count_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(key_count_label, &lv_font_montserrat_16, LV_PART_MAIN);
-    lv_obj_align(key_count_label, LV_ALIGN_BOTTOM_MID, 0, -48);
 
     settings_register(&key_count_settings);
     settings_load_subtree("zen_keys");
+    zen_minute_counter_reset(&minute_counter, (uint32_t)atomic_get(&key_press_count));
     key_count_display_cb(NULL);
     k_timer_start(&key_count_display_timer, KEY_COUNT_DISPLAY_INTERVAL,
                   KEY_COUNT_DISPLAY_INTERVAL);
@@ -300,16 +309,16 @@ lv_obj_t *zmk_display_status_screen() {
                                &lv_font_montserrat_16, LV_PART_MAIN);
     lv_obj_align(zmk_widget_layer_status_obj(&layer_status_widget), LV_ALIGN_BOTTOM_MID, 0, -5);
 #else
-    status_screen = screen;
+    zmk_widget_battery_status_init(&battery_status_widget, screen);
+    lv_obj_align(zmk_widget_battery_status_obj(&battery_status_widget), LV_ALIGN_TOP_MID, 0, 2);
 
     zmk_widget_peripheral_status_init(&peripheral_status_widget, screen);
     lv_obj_align(zmk_widget_peripheral_status_obj(&peripheral_status_widget), LV_ALIGN_TOP_MID, 0,
-                 2);
+                 37);
 
-    locks_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(locks_label, &lv_font_montserrat_14, LV_PART_MAIN);
-    lv_obj_align(locks_label, LV_ALIGN_TOP_MID, 0, 42);
-    locks_display_cb(NULL);
+    minute_label = lv_label_create(screen);
+    atomic_set(&right_connected, zmk_split_bt_peripheral_is_connected());
+    minute_display_cb(NULL);
 
     lv_obj_t *zenlogo_icon;
     zenlogo_icon = lv_img_create(screen);

@@ -94,7 +94,7 @@ jobs:
         working-directory: ${{ env.base_dir }}
         run: west update --fetch-opt=--filter=tree:0
 
-      - name: Install custom Corne-ish Zen screen and logo
+      - name: Install custom Corne-ish Zen screen and assets
         if: ${{ matrix.board == 'corneish_zen_v2_left' || matrix.board == 'corneish_zen_v2_right' }}
         working-directory: ${{ env.base_dir }}
         run: |
@@ -102,10 +102,25 @@ jobs:
             "zmk/app/boards/arm/corneish_zen/custom_status_screen.c"
           cp "${GITHUB_WORKSPACE}/config/custom_status_screen.h" \
             "zmk/app/boards/arm/corneish_zen/custom_status_screen.h"
-          cp "${GITHUB_WORKSPACE}/config/widgets/icons/zenlogo.c" \
-            "zmk/app/boards/arm/corneish_zen/widgets/icons/zenlogo.c"
-          cmp "${GITHUB_WORKSPACE}/config/widgets/icons/zenlogo.c" \
-            "zmk/app/boards/arm/corneish_zen/widgets/icons/zenlogo.c"
+          cp "${GITHUB_WORKSPACE}/config/zen_minute_counter.h" \
+            "zmk/app/boards/arm/corneish_zen/zen_minute_counter.h"
+          cp "${GITHUB_WORKSPACE}/config/zen_minute_behavior.c" \
+            "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
+          cp "${GITHUB_WORKSPACE}/config/widgets/battery_status.c" \
+            "zmk/app/boards/arm/corneish_zen/widgets/battery_status.c"
+          cp "${GITHUB_WORKSPACE}/config/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml" \
+            "zmk/app/dts/bindings/behaviors/zmk,behavior-zen-minute.yaml"
+          printf '\nzephyr_library_sources_ifdef(CONFIG_CUSTOM_WIDGET_PERIPHERAL_STATUS zen_minute_behavior.c)\n' \
+            >> "zmk/app/boards/arm/corneish_zen/CMakeLists.txt"
+          for icon in bluetooth_connected_{1..5} bluetooth_advertising_{1..5} \
+                      bluetooth_connected_right bluetooth_disconnected_right zenlogo; do
+            cp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \
+              "zmk/app/boards/arm/corneish_zen/widgets/icons/${icon}.c"
+            cmp "${GITHUB_WORKSPACE}/config/widgets/icons/${icon}.c" \
+              "zmk/app/boards/arm/corneish_zen/widgets/icons/${icon}.c"
+          done
+          cmp "${GITHUB_WORKSPACE}/config/zen_minute_behavior.c" \
+            "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
 
       - name: West Zephyr export
         working-directory: ${{ env.base_dir }}

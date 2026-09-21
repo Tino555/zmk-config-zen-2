@@ -6,12 +6,12 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/bluetooth/services/bas.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zmk/display.h>
+#include <zmk/battery.h>
 #include "battery_status.h"
 #include <zmk/usb.h>
 #include <zmk/events/usb_conn_state_changed.h>
@@ -42,22 +42,24 @@ LV_IMG_DECLARE(batt_0_chg);
 
 static void set_battery_symbol(lv_obj_t *icon, struct battery_status_state state) {
     uint8_t level = state.level;
+    bool charging = false;
 
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
+    charging = state.usb_present;
+#endif
     if (level > 95) {
-        lv_img_set_src(icon, state.usb_present ? &batt_100_chg : &batt_100);
+        lv_img_set_src(icon, charging ? &batt_100_chg : &batt_100);
     } else if (level > 74) {
-        lv_img_set_src(icon, state.usb_present ? &batt_75_chg : &batt_75);
+        lv_img_set_src(icon, charging ? &batt_75_chg : &batt_75);
     } else if (level > 49) {
-        lv_img_set_src(icon, state.usb_present ? &batt_50_chg : &batt_50);
+        lv_img_set_src(icon, charging ? &batt_50_chg : &batt_50);
     } else if (level > 24) {
-        lv_img_set_src(icon, state.usb_present ? &batt_25_chg : &batt_25);
+        lv_img_set_src(icon, charging ? &batt_25_chg : &batt_25);
     } else if (level > 5) {
-        lv_img_set_src(icon, state.usb_present ? &batt_5_chg : &batt_5);
+        lv_img_set_src(icon, charging ? &batt_5_chg : &batt_5);
     } else {
-        lv_img_set_src(icon, state.usb_present ? &batt_0_chg : &batt_0);
+        lv_img_set_src(icon, charging ? &batt_0_chg : &batt_0);
     }
-#endif /* IS_ENABLED(CONFIG_USB_DEVICE_STACK) */
 }
 
 void battery_status_update_cb(struct battery_status_state state) {
@@ -66,8 +68,9 @@ void battery_status_update_cb(struct battery_status_state state) {
 }
 
 static struct battery_status_state battery_status_get_state(const zmk_event_t *eh) {
-    return (struct battery_status_state) {
-        .level = bt_bas_get_battery_level(),
+    const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
+    return (struct battery_status_state){
+        .level = ev != NULL ? ev->state_of_charge : zmk_battery_state_of_charge(),
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
         .usb_present = zmk_usb_is_powered(),
 #endif /* IS_ENABLED(CONFIG_USB_DEVICE_STACK) */
