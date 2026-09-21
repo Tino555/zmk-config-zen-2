@@ -105,6 +105,29 @@ int main(void) {
             )
             subprocess.run([str(executable)], check=True, capture_output=True)
 
+    def test_key_count_is_session_only_and_resets_across_sleep(self):
+        screen = (ROOT / "config/custom_status_screen.c").read_text()
+        self.assertNotIn("#include <zephyr/settings/settings.h>", screen)
+        self.assertNotIn("settings_save_one", screen)
+        self.assertNotIn("settings_register", screen)
+        self.assertNotIn("settings_load_subtree", screen)
+        self.assertNotIn("KEY_COUNT_SAVE_INTERVAL", screen)
+        self.assertNotIn("key_count_save_timer", screen)
+        self.assertNotIn("key_count_saved", screen)
+
+        sleep_branch = screen.split("ev->state == ZMK_ACTIVITY_SLEEP", 1)[1].split(
+            "ZMK_ACTIVITY_ACTIVE", 1
+        )[0]
+        self.assertIn("atomic_set(&key_press_count, 0);", sleep_branch)
+        self.assertIn("zen_minute_counter_reset(&minute_counter, 0);", sleep_branch)
+        self.assertIn("atomic_set(&minute_delta, 0);", sleep_branch)
+        self.assertIn("atomic_set(&minute_ready, 0);", sleep_branch)
+
+        wake_branch = screen.split("ZMK_ACTIVITY_ACTIVE", 1)[1].split(
+            "return ZMK_EV_EVENT_BUBBLE", 1
+        )[0]
+        self.assertIn("key_count_display_cb(NULL);", wake_branch)
+
     def test_screen_and_build_have_new_components(self):
         screen = (ROOT / "config/custom_status_screen.c").read_text()
         self.assertIn("zmk_widget_battery_status_init", screen)

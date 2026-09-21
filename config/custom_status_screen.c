@@ -9,7 +9,6 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
-#include <zephyr/settings/settings.h>
 
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
@@ -101,10 +100,9 @@ static struct zmk_widget_output_status output_status_widget;
 static struct zmk_widget_layer_status layer_status_widget;
 
 /* Key press counter: counted on physical position events, displayed once per
- * minute, persisted to settings every 10 minutes and before going to sleep. */
+ * minute, and reset whenever the keyboard enters sleep. */
 static lv_obj_t *key_count_label;
 static atomic_t key_press_count = ATOMIC_INIT(0);
-static atomic_t key_count_saved = ATOMIC_INIT(0);
 static struct zen_minute_counter minute_counter;
 static atomic_t minute_delta = ATOMIC_INIT(0);
 static atomic_t minute_sequence = ATOMIC_INIT(0);
@@ -113,7 +111,6 @@ static atomic_t minute_ready = ATOMIC_INIT(0);
 static atomic_t minute_awake = ATOMIC_INIT(1);
 
 #define KEY_COUNT_DISPLAY_INTERVAL K_MINUTES(1)
-#define KEY_COUNT_SAVE_INTERVAL K_MINUTES(10)
 
 static void minute_send_cb(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(minute_send_work, minute_send_cb);
@@ -160,29 +157,11 @@ static void key_count_display_cb(struct k_work *work) {
 
 K_WORK_DEFINE(key_count_display_work, key_count_display_cb);
 
-static void key_count_save_cb(struct k_work *work) {
-    uint32_t count = (uint32_t)atomic_get(&key_press_count);
-    if (count == (uint32_t)atomic_get(&key_count_saved)) {
-        return;
-    }
-
-    if (settings_save_one("zen_keys/count", &count, sizeof(count)) == 0) {
-        atomic_set(&key_count_saved, (atomic_val_t)count);
-    }
-}
-
-K_WORK_DEFINE(key_count_save_work, key_count_save_cb);
-
 static void key_count_display_timer_cb(struct k_timer *timer) {
     k_work_submit_to_queue(zmk_display_work_q(), &key_count_display_work);
 }
 
-static void key_count_save_timer_cb(struct k_timer *timer) {
-    k_work_submit(&key_count_save_work);
-}
-
 K_TIMER_DEFINE(key_count_display_timer, key_count_display_timer_cb, NULL);
-K_TIMER_DEFINE(key_count_save_timer, key_count_save_timer_cb, NULL);
 
 static int key_count_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
@@ -207,16 +186,17 @@ static int key_count_activity_cb(const zmk_event_t *eh) {
     if (ev != NULL && ev->state == ZMK_ACTIVITY_SLEEP) {
         atomic_set(&minute_awake, 0);
         k_timer_stop(&key_count_display_timer);
-        k_timer_stop(&key_count_save_timer);
-        zen_minute_counter_reset(&minute_counter, (uint32_t)atomic_get(&key_press_count));
+        atomic_set(&key_press_count, 0);
+        zen_minute_counter_reset(&minute_counter, 0);
+        atomic_set(&minute_delta, 0);
         atomic_set(&minute_ready, 0);
+        atomic_set(&minute_retries, 0);
         k_work_cancel_delayable(&minute_send_work);
-        key_count_save_cb(NULL);
     } else if (ev != NULL && ev->state == ZMK_ACTIVITY_ACTIVE && !atomic_get(&minute_awake)) {
         atomic_set(&minute_awake, 1);
+        key_count_display_cb(NULL);
         k_timer_start(&key_count_display_timer, KEY_COUNT_DISPLAY_INTERVAL,
                       KEY_COUNT_DISPLAY_INTERVAL);
-        k_timer_start(&key_count_save_timer, KEY_COUNT_SAVE_INTERVAL, KEY_COUNT_SAVE_INTERVAL);
     }
 
     return ZMK_EV_EVENT_BUBBLE;
@@ -238,26 +218,6 @@ static int key_count_battery_cb(const zmk_event_t *eh) {
 
 ZMK_LISTENER(key_count_battery_listener, key_count_battery_cb);
 ZMK_SUBSCRIPTION(key_count_battery_listener, zmk_peripheral_battery_state_changed);
-
-static int key_count_settings_set(const char *name, size_t len, settings_read_cb read_cb,
-                                  void *cb_arg) {
-    const char *next;
-    uint32_t count = 0;
-
-    if (settings_name_steq(name, "count", &next) && next == NULL && len == sizeof(count)) {
-        if (read_cb(cb_arg, &count, sizeof(count)) == sizeof(count)) {
-            atomic_set(&key_press_count, (atomic_val_t)count);
-            atomic_set(&key_count_saved, (atomic_val_t)count);
-        }
-    }
-
-    return 0;
-}
-
-static struct settings_handler key_count_settings = {
-    .name = "zen_keys",
-    .h_set = key_count_settings_set,
-};
 
 #else /* peripheral (right) side */
 
@@ -329,13 +289,10 @@ lv_obj_t *zmk_display_status_screen() {
     key_count_label = lv_label_create(screen);
     status_layout_items[2] = key_count_label;
 
-    settings_register(&key_count_settings);
-    settings_load_subtree("zen_keys");
     zen_minute_counter_reset(&minute_counter, (uint32_t)atomic_get(&key_press_count));
     key_count_display_cb(NULL);
     k_timer_start(&key_count_display_timer, KEY_COUNT_DISPLAY_INTERVAL,
                   KEY_COUNT_DISPLAY_INTERVAL);
-    k_timer_start(&key_count_save_timer, KEY_COUNT_SAVE_INTERVAL, KEY_COUNT_SAVE_INTERVAL);
 
     lv_obj_t *LayersHeading;
     LayersHeading = lv_img_create(screen);
