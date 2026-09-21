@@ -25,6 +25,7 @@
 #include "widgets/peripheral_status.h"
 #include "widgets/battery_status.h"
 #include "zen_minute_counter.h"
+#include "zen_screen_layout.h"
 #include "custom_status_screen.h"
 
 #include <zephyr/logging/log.h>
@@ -33,6 +34,41 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 LV_IMG_DECLARE(zenlogo);
 LV_IMG_DECLARE(layers2);
 static struct zmk_widget_battery_status battery_status_widget;
+static lv_obj_t *status_layout_screen;
+static lv_obj_t *status_layout_items[5];
+static size_t status_layout_count;
+
+static void status_layout_cb(struct k_work *work) {
+    if (status_layout_screen == NULL) {
+        return;
+    }
+
+    lv_obj_update_layout(status_layout_screen);
+    int32_t heights[ARRAY_SIZE(status_layout_items)];
+    int32_t tops[ARRAY_SIZE(status_layout_items)];
+    for (size_t i = 0; i < status_layout_count; ++i) {
+        heights[i] = lv_obj_get_height(status_layout_items[i]);
+    }
+    zen_screen_layout(lv_obj_get_content_height(status_layout_screen), heights, status_layout_count,
+                      tops);
+
+    for (size_t i = 0; i < status_layout_count; ++i) {
+        lv_obj_t *item = status_layout_items[i];
+        lv_coord_t centered_x = lv_obj_get_content_width(status_layout_screen) / 2 -
+                                lv_obj_get_width(item) / 2;
+        if (lv_obj_get_x(item) != centered_x || lv_obj_get_y(item) != tops[i]) {
+            lv_obj_align(item, LV_ALIGN_TOP_MID, 0, tops[i]);
+        }
+    }
+}
+
+K_WORK_DEFINE(status_layout_work, status_layout_cb);
+
+static void status_size_changed_cb(lv_event_t *event) {
+    if (status_layout_screen != NULL) {
+        k_work_submit_to_queue(zmk_display_work_q(), &status_layout_work);
+    }
+}
 
 static void set_count_text(lv_obj_t *label, const char *text) {
     const lv_font_t *fonts[] = {
@@ -57,7 +93,6 @@ static void set_count_text(lv_obj_t *label, const char *text) {
     if (text_changed) {
         lv_label_set_text(label, text);
     }
-    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 58);
 }
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
@@ -281,15 +316,18 @@ ZMK_SUBSCRIPTION(minute_connection_listener, zmk_split_peripheral_status_changed
 lv_obj_t *zmk_display_status_screen() {
     lv_obj_t *screen;
     screen = lv_obj_create(NULL);
+    lv_obj_set_style_pad_all(screen, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(screen, 0, LV_PART_MAIN);
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     zmk_widget_battery_status_init(&battery_status_widget, screen);
-    lv_obj_align(zmk_widget_battery_status_obj(&battery_status_widget), LV_ALIGN_TOP_MID, 0, 2);
+    status_layout_items[0] = zmk_widget_battery_status_obj(&battery_status_widget);
 
     zmk_widget_output_status_init(&output_status_widget, screen);
-    lv_obj_align(zmk_widget_output_status_obj(&output_status_widget), LV_ALIGN_TOP_MID, 0, 37);
+    status_layout_items[1] = zmk_widget_output_status_obj(&output_status_widget);
 
     key_count_label = lv_label_create(screen);
+    status_layout_items[2] = key_count_label;
 
     settings_register(&key_count_settings);
     settings_load_subtree("zen_keys");
@@ -301,30 +339,39 @@ lv_obj_t *zmk_display_status_screen() {
 
     lv_obj_t *LayersHeading;
     LayersHeading = lv_img_create(screen);
-    lv_obj_align(LayersHeading, LV_ALIGN_BOTTOM_MID, 0, -30);
     lv_img_set_src(LayersHeading, &layers2);
+    status_layout_items[3] = LayersHeading;
 
     zmk_widget_layer_status_init(&layer_status_widget, screen);
     lv_obj_set_style_text_font(zmk_widget_layer_status_obj(&layer_status_widget),
                                &lv_font_montserrat_16, LV_PART_MAIN);
-    lv_obj_align(zmk_widget_layer_status_obj(&layer_status_widget), LV_ALIGN_BOTTOM_MID, 0, -5);
+    status_layout_items[4] = zmk_widget_layer_status_obj(&layer_status_widget);
+    status_layout_count = 5;
 #else
     zmk_widget_battery_status_init(&battery_status_widget, screen);
-    lv_obj_align(zmk_widget_battery_status_obj(&battery_status_widget), LV_ALIGN_TOP_MID, 0, 2);
+    status_layout_items[0] = zmk_widget_battery_status_obj(&battery_status_widget);
 
     zmk_widget_peripheral_status_init(&peripheral_status_widget, screen);
-    lv_obj_align(zmk_widget_peripheral_status_obj(&peripheral_status_widget), LV_ALIGN_TOP_MID, 0,
-                 37);
+    status_layout_items[1] = zmk_widget_peripheral_status_obj(&peripheral_status_widget);
 
     minute_label = lv_label_create(screen);
     atomic_set(&right_connected, zmk_split_bt_peripheral_is_connected());
     minute_display_cb(NULL);
+    status_layout_items[2] = minute_label;
 
     lv_obj_t *zenlogo_icon;
     zenlogo_icon = lv_img_create(screen);
     lv_img_set_src(zenlogo_icon, &zenlogo);
-    lv_obj_align(zenlogo_icon, LV_ALIGN_BOTTOM_MID, 0, -5);
+    status_layout_items[3] = zenlogo_icon;
+    status_layout_count = 4;
 #endif
+
+    for (size_t i = 0; i < status_layout_count; ++i) {
+        lv_obj_add_event_cb(status_layout_items[i], status_size_changed_cb, LV_EVENT_SIZE_CHANGED,
+                            NULL);
+    }
+    status_layout_screen = screen;
+    status_layout_cb(NULL);
 
     return screen;
 }

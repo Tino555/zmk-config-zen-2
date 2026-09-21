@@ -104,6 +104,8 @@ jobs:
             "zmk/app/boards/arm/corneish_zen/custom_status_screen.h"
           cp "${GITHUB_WORKSPACE}/config/zen_minute_counter.h" \
             "zmk/app/boards/arm/corneish_zen/zen_minute_counter.h"
+          cp "${GITHUB_WORKSPACE}/config/zen_screen_layout.h" \
+            "zmk/app/boards/arm/corneish_zen/zen_screen_layout.h"
           cp "${GITHUB_WORKSPACE}/config/zen_minute_behavior.c" \
             "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
           cp "${GITHUB_WORKSPACE}/config/widgets/battery_status.c" \

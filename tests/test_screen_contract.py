@@ -12,6 +12,71 @@ ICONS = ROOT / "config/widgets/icons"
 
 
 class ScreenContractTest(unittest.TestCase):
+    def test_screen_layout_distributes_edge_and_internal_gaps(self):
+        program = r'''
+#include <assert.h>
+#include <stdint.h>
+#include "zen_screen_layout.h"
+
+static void check_gaps(const int32_t *heights, const int32_t *tops, size_t count) {
+    int32_t smallest = 128;
+    int32_t largest = 0;
+    int32_t end = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int32_t gap = tops[i] - end;
+        assert(gap >= 0);
+        if (gap < smallest) smallest = gap;
+        if (gap > largest) largest = gap;
+        end = tops[i] + heights[i];
+    }
+    int32_t bottom = 128 - end;
+    if (bottom < smallest) smallest = bottom;
+    if (bottom > largest) largest = bottom;
+    assert(largest - smallest <= 1);
+}
+
+int main(void) {
+    const int32_t right_heights[] = {31, 16, 14, 38};
+    int32_t right_tops[4];
+    zen_screen_layout(128, right_heights, 4, right_tops);
+    assert(right_tops[0] == 5 && right_tops[1] == 42);
+    assert(right_tops[2] == 64 && right_tops[3] == 84);
+    check_gaps(right_heights, right_tops, 4);
+
+    const int32_t left_heights[] = {31, 16, 14, 12, 16};
+    int32_t left_tops[5];
+    zen_screen_layout(128, left_heights, 5, left_tops);
+    assert(left_tops[0] == 6 && left_tops[1] == 44);
+    assert(left_tops[2] == 66 && left_tops[3] == 87 && left_tops[4] == 105);
+    check_gaps(left_heights, left_tops, 5);
+
+    const int32_t usb_heights[] = {31, 31, 14, 38};
+    int32_t usb_tops[4];
+    zen_screen_layout(128, usb_heights, 4, usb_tops);
+    check_gaps(usb_heights, usb_tops, 4);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "main.c"
+            executable = Path(directory) / "layout"
+            source.write_text(program)
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "config"),
+                 str(source), "-o", str(executable)], check=True, capture_output=True,
+            )
+            subprocess.run([str(executable)], check=True, capture_output=True)
+
+    def test_screen_reflows_when_widget_size_changes(self):
+        screen = (ROOT / "config/custom_status_screen.c").read_text()
+        self.assertIn("LV_EVENT_SIZE_CHANGED", screen)
+        self.assertIn("lv_obj_update_layout", screen)
+        self.assertIn("lv_obj_get_content_height(status_layout_screen)", screen)
+        self.assertIn("lv_obj_get_content_width(status_layout_screen)", screen)
+        self.assertIn("lv_obj_set_style_pad_all(screen, 0, LV_PART_MAIN)", screen)
+        self.assertIn("zen_screen_layout", screen)
+        self.assertNotIn("LV_ALIGN_TOP_MID, 0, 58", screen)
+
     def test_minute_counter_tracks_completed_windows_and_resets_after_sleep(self):
         program = r'''
 #include <assert.h>
@@ -81,7 +146,7 @@ int main(void) {
                 self.assertEqual((board / "widgets/icons" / f"{name}.c").read_bytes(),
                                  (ICONS / f"{name}.c").read_bytes())
             for name in ("custom_status_screen.c", "custom_status_screen.h",
-                         "zen_minute_behavior.c", "zen_minute_counter.h"):
+                         "zen_minute_behavior.c", "zen_minute_counter.h", "zen_screen_layout.h"):
                 self.assertEqual((board / name).read_bytes(), (ROOT / "config" / name).read_bytes())
             self.assertEqual((board / "widgets/battery_status.c").read_bytes(),
                              (ROOT / "config/widgets/battery_status.c").read_bytes())
