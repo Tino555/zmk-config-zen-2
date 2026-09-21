@@ -94,6 +94,16 @@ jobs:
         working-directory: ${{ env.base_dir }}
         run: west update --fetch-opt=--filter=tree:0
 
+      - name: Limit LVGL invalidation padding to transformed widgets
+        if: ${{ matrix.board == 'corneish_zen_v2_left' || matrix.board == 'corneish_zen_v2_right' }}
+        working-directory: ${{ env.base_dir }}
+        run: |
+          test "$(git -C modules/lib/gui/lvgl rev-parse HEAD)" = "8a6a2d1d29d17d1e4bdc94c243c146a39d635fdd"
+          if ! git -C modules/lib/gui/lvgl apply --reverse --check "${GITHUB_WORKSPACE}/patches/lvgl-avoid-static-invalidation-padding.patch"; then
+            git -C modules/lib/gui/lvgl apply --check "${GITHUB_WORKSPACE}/patches/lvgl-avoid-static-invalidation-padding.patch"
+            git -C modules/lib/gui/lvgl apply "${GITHUB_WORKSPACE}/patches/lvgl-avoid-static-invalidation-padding.patch"
+          fi
+
       - name: Install custom Corne-ish Zen screen and assets
         if: ${{ matrix.board == 'corneish_zen_v2_left' || matrix.board == 'corneish_zen_v2_right' }}
         working-directory: ${{ env.base_dir }}

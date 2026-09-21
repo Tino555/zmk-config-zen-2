@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import subprocess
@@ -171,6 +172,119 @@ int main(void) {
                 self.assertRegex(source, r"\.data_size\s*=\s*88,")
                 body = source.split("_map[] = {", 1)[1].split("};", 1)[0]
                 self.assertEqual(len(re.findall(r"0x[0-9a-fA-F]{2}\b", body)), 88)
+
+    def test_signature_crops_blank_rows_without_resampling(self):
+        source = (ICONS / "zenlogo.c").read_text()
+        self.assertRegex(source, r"\.header\.w\s*=\s*80,")
+        self.assertRegex(source, r"\.header\.h\s*=\s*26,")
+        self.assertRegex(source, r"\.data_size\s*=\s*268,")
+        body = source.split("zenlogo_map[] = {", 1)[1].split("};", 1)[0]
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        data = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", body))
+        self.assertEqual(len(data), 268)
+        self.assertTrue(any(data[8:18]))
+        self.assertTrue(any(data[-10:]))
+        self.assertEqual(hashlib.sha256(data[8:]).hexdigest(),
+                         "aaeffbee7fcbe8befe4e80e6c3aa3e4af82362783e4d7eacc177189eb60cb6d9")
+
+    def test_build_patches_lvgl_invalidation_for_untransformed_widgets(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text()
+        self.assertIn("8a6a2d1d29d17d1e4bdc94c243c146a39d635fdd", workflow)
+        self.assertIn("apply --reverse --check", workflow)
+        self.assertIn("git -C modules/lib/gui/lvgl apply --check", workflow)
+        self.assertIn("git -C modules/lib/gui/lvgl apply", workflow)
+        patch = (ROOT / "patches/lvgl-avoid-static-invalidation-padding.patch").read_text()
+        self.assertIn("src/core/lv_obj_pos.c", patch)
+        self.assertIn("LV_LAYER_TYPE_TRANSFORM", patch)
+
+        # The upstream function's tail is enough to exercise the source-level patch.
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "src/core/lv_obj_pos.c"
+            target.parent.mkdir(parents=True)
+            target.write_text("""void lv_obj_get_transformed_area(const lv_obj_t * obj, lv_area_t * area, bool recursive,
+                                 bool inv)
+{
+    lv_point_t p[4] = {
+        {area->x1, area->y1},
+        {area->x1, area->y2},
+        {area->x2, area->y1},
+        {area->x2, area->y2},
+    };
+
+    lv_obj_transform_point(obj, &p[0], recursive, inv);
+    lv_obj_transform_point(obj, &p[1], recursive, inv);
+    lv_obj_transform_point(obj, &p[2], recursive, inv);
+    lv_obj_transform_point(obj, &p[3], recursive, inv);
+
+    area->x1 = LV_MIN4(p[0].x, p[1].x, p[2].x, p[3].x);
+    area->x2 = LV_MAX4(p[0].x, p[1].x, p[2].x, p[3].x);
+    area->y1 = LV_MIN4(p[0].y, p[1].y, p[2].y, p[3].y);
+    area->y2 = LV_MAX4(p[0].y, p[1].y, p[2].y, p[3].y);
+    lv_area_increase(area, 5, 5);
+}
+
+""")
+            subprocess.run(["git", "apply", "--check", str(ROOT / "patches/lvgl-avoid-static-invalidation-padding.patch")],
+                           cwd=directory, check=True, capture_output=True)
+            subprocess.run(["git", "apply", str(ROOT / "patches/lvgl-avoid-static-invalidation-padding.patch")],
+                           cwd=directory, check=True, capture_output=True)
+            subprocess.run(["git", "apply", "--reverse", "--check",
+                            str(ROOT / "patches/lvgl-avoid-static-invalidation-padding.patch")],
+                           cwd=directory, check=True, capture_output=True)
+            patched = target.read_text()
+            self.assertIn("if(_lv_obj_get_layer_type(current) == LV_LAYER_TYPE_TRANSFORM)", patched)
+            self.assertEqual(patched.count("lv_area_increase(area, 5, 5)"), 1)
+
+            program = Path(directory) / "main.c"
+            program.write_text(r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+typedef struct lv_obj_t { int layer; struct lv_obj_t *parent; } lv_obj_t;
+typedef struct { int x; int y; } lv_point_t;
+typedef struct { int x1; int y1; int x2; int y2; } lv_area_t;
+#define LV_LAYER_TYPE_TRANSFORM 1
+static int min4(int a, int b, int c, int d) {
+    int result = a < b ? a : b;
+    result = result < c ? result : c;
+    return result < d ? result : d;
+}
+static int max4(int a, int b, int c, int d) {
+    int result = a > b ? a : b;
+    result = result > c ? result : c;
+    return result > d ? result : d;
+}
+#define LV_MIN4(a, b, c, d) min4(a, b, c, d)
+#define LV_MAX4(a, b, c, d) max4(a, b, c, d)
+static void lv_area_increase(lv_area_t *area, int x, int y) {
+    area->x1 -= x; area->x2 += x; area->y1 -= y; area->y2 += y;
+}
+static int _lv_obj_get_layer_type(const lv_obj_t *obj) { return obj->layer; }
+static const lv_obj_t *lv_obj_get_parent(const lv_obj_t *obj) { return obj->parent; }
+static void lv_obj_transform_point(const lv_obj_t *obj, lv_point_t *p, bool recursive, bool inv) {
+    (void)obj; (void)p; (void)recursive; (void)inv;
+}
+''' + patched + r'''
+int main(void) {
+    lv_obj_t parent = {LV_LAYER_TYPE_TRANSFORM, NULL};
+    lv_obj_t child = {0, &parent};
+    lv_area_t area = {10, 20, 29, 34};
+    lv_obj_get_transformed_area(&child, &area, false, false);
+    assert(area.x1 == 10 && area.y1 == 20 && area.x2 == 29 && area.y2 == 34);
+    area = (lv_area_t){10, 20, 29, 34};
+    lv_obj_get_transformed_area(&child, &area, true, false);
+    assert(area.x1 == 5 && area.y1 == 15 && area.x2 == 34 && area.y2 == 39);
+    child.layer = LV_LAYER_TYPE_TRANSFORM;
+    area = (lv_area_t){10, 20, 29, 34};
+    lv_obj_get_transformed_area(&child, &area, false, false);
+    assert(area.x1 == 5 && area.y1 == 15 && area.x2 == 34 && area.y2 == 39);
+    return 0;
+}
+''')
+            executable = Path(directory) / "invalidation"
+            subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", str(program),
+                            "-o", str(executable)], check=True, capture_output=True)
+            subprocess.run([str(executable)], check=True, capture_output=True)
 
     def test_shift_control_positions_and_sleep_timeout(self):
         keymap = (ROOT / "config/corneish_zen.keymap").read_text()
