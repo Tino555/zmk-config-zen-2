@@ -118,9 +118,13 @@ jobs:
             "zmk/app/boards/arm/corneish_zen/zen_screen_layout.h"
           cp "${GITHUB_WORKSPACE}/config/zen_minute_behavior.c" \
             "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
+          cp "${GITHUB_WORKSPACE}/config/zen_ble_profile_guard.c" \
+            "zmk/app/boards/arm/corneish_zen/zen_ble_profile_guard.c"
           cp "${GITHUB_WORKSPACE}/config/widgets/battery_status.c" \
             "zmk/app/boards/arm/corneish_zen/widgets/battery_status.c"
           printf '\nzephyr_library_sources_ifdef(CONFIG_CUSTOM_WIDGET_PERIPHERAL_STATUS zen_minute_behavior.c)\n' \
+            >> "zmk/app/boards/arm/corneish_zen/CMakeLists.txt"
+          printf '\nzephyr_library_sources_ifdef(CONFIG_ZMK_SPLIT_ROLE_CENTRAL zen_ble_profile_guard.c)\n' \
             >> "zmk/app/boards/arm/corneish_zen/CMakeLists.txt"
           for number in 1 2 3 4 5; do
             for state in connected advertising; do
@@ -139,6 +143,8 @@ jobs:
           done
           cmp "${GITHUB_WORKSPACE}/config/zen_minute_behavior.c" \
             "zmk/app/boards/arm/corneish_zen/zen_minute_behavior.c"
+          cmp "${GITHUB_WORKSPACE}/config/zen_ble_profile_guard.c" \
+            "zmk/app/boards/arm/corneish_zen/zen_ble_profile_guard.c"
 
       - name: West Zephyr export
         working-directory: ${{ env.base_dir }}
